@@ -1,33 +1,91 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { Trash2, Plus, Clock, AlertCircle, CheckCircle, Activity, Calendar, PlayCircle, Edit2, Save, X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Trash2, Plus, Clock, AlertCircle, CheckCircle, Activity, Calendar, PlayCircle, Edit2, Save, X, List, ChevronLeft, CheckSquare, Square, FileText, GripVertical, Database, LogOut, User as UserIcon } from 'lucide-react';
+import { authUser, logout, checkAuth, getSubjects, saveSubjects } from './actions';
 
 export default function GateTracker() {
   const [subjects, setSubjects] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   
-  // --- Form States ---
+  // Custom Auth State
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [username, setUsername] = useState("");
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+  const [authError, setAuthError] = useState("");
+
+  // Drag & Drop Refs
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+  const [activeSubjectId, setActiveSubjectId] = useState(null);
+
+  // Form States
   const [newSubject, setNewSubject] = useState("");
   const [duration, setDuration] = useState("");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
-  
-  // Task States
-  const [hasTask, setHasTask] = useState(false);
-  const [taskName, setTaskName] = useState(""); // e.g. "Videos"
-  const [taskTotal, setTaskTotal] = useState(""); // e.g. 50
+  const [trackMode, setTrackMode] = useState("manual"); 
+  const [taskName, setTaskName] = useState(""); 
+  const [taskTotal, setTaskTotal] = useState(""); 
+  const [syllabusInput, setSyllabusInput] = useState("");
 
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  // --- Load/Save ---
+  // --- Initialize & Fetch Data ---
   useEffect(() => {
-    const saved = localStorage.getItem("gate_subjects_v4");
-    if (saved) setSubjects(JSON.parse(saved));
+    async function loadData() {
+      const authData = await checkAuth();
+      setIsAuthenticated(authData.isAuthenticated);
+      setUsername(authData.username || "");
+
+      if (authData.isAuthenticated) {
+        const data = await getSubjects();
+        setSubjects(data || []);
+      }
+      setIsLoading(false);
+    }
+    loadData();
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("gate_subjects_v4", JSON.stringify(subjects));
-  }, [subjects]);
+  const saveToDB = async (updatedSubjects) => {
+    setSubjects(updatedSubjects); // Optimistic UI update
+    if (!isAuthenticated) return;
+    await saveSubjects(updatedSubjects);
+  };
+
+  // --- Auth Handlers ---
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    const formData = new FormData(e.target);
+    formData.append('mode', authMode);
+    
+    const result = await authUser(formData);
+    if (result.error) {
+        setAuthError(result.error);
+    } else {
+        setShowAuthModal(false);
+        window.location.reload(); // Reload to fetch user data cleanly
+    }
+  };
+
+  const handleLogout = async () => {
+      await logout();
+      window.location.reload();
+  };
+
+  // --- MIGRATION TOOL ---
+  const handleMigrate = () => {
+      const localData = localStorage.getItem("gate_subjects_v5");
+      if (localData) {
+          const parsedData = JSON.parse(localData);
+          saveToDB(parsedData);
+          alert("Successfully migrated local data to the database!");
+      } else {
+          alert("No local data found under 'gate_subjects_v5'.");
+      }
+  };
 
   // --- Clock ---
   useEffect(() => {
@@ -35,33 +93,96 @@ export default function GateTracker() {
     return () => clearInterval(timer);
   }, []);
 
-  // --- Add Subject Logic ---
+  // --- Drag & Drop Logic ---
+  const handleSort = () => {
+    if (dragItem.current === null || dragOverItem.current === null) return;
+    let _subjects = [...subjects];
+    const draggedItemContent = _subjects.splice(dragItem.current, 1)[0];
+    _subjects.splice(dragOverItem.current, 0, draggedItemContent);
+    dragItem.current = null;
+    dragOverItem.current = null;
+    saveToDB(_subjects);
+  };
+
+  // --- Parsing Logic for Syllabus ---
+  // --- Parsing Logic for Syllabus ---
+  const parseSyllabus = (text) => {
+    const lines = text.split('\n');
+    const modules = [];
+    let currentModule = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      if (!line || line.startsWith('===')) continue;
+
+      if (!line.startsWith('-')) {
+        // Added 'i' to guarantee a unique ID for the module
+        currentModule = { id: `mod_${Date.now()}_${i}`, title: line, lectures: [] };
+        modules.push(currentModule);
+      } else {
+        const timeMatch = line.match(/\[Timing:\s*([^\]]+)\]/i) || line.match(/\[Time:\s*([^\]]+)\]/i);
+        let durationMin = 0;
+        let cleanTitle = line.replace(/^-?\s*/, ''); 
+        
+        if (timeMatch) {
+          const timeStr = timeMatch[1].trim();
+          if (timeStr.toUpperCase() !== 'NULL') {
+             const parts = timeStr.split(':');
+             if (parts.length >= 2) durationMin = parseInt(parts[0], 10);
+             else durationMin = parseInt(timeStr, 10) || 0;
+          }
+          cleanTitle = cleanTitle.replace(/\[Timing:\s*([^\]]+)\]/i, '').replace(/\[Time:\s*([^\]]+)\]/i, '').trim();
+        }
+
+        if (!currentModule) {
+            currentModule = { id: `mod_general_${Date.now()}_${i}`, title: "General Lectures", lectures: [] };
+            modules.push(currentModule);
+        }
+
+        currentModule.lectures.push({
+          // Added 'i' to guarantee a unique ID for every single lecture
+          id: `lec_${Date.now()}_${i}`, 
+          title: cleanTitle,
+          durationMin: durationMin,
+          isCompleted: false
+        });
+      }
+    }
+    return modules;
+  };
+
+  // --- Actions ---
   const addSubject = (e) => {
     e.preventDefault();
     if (!newSubject) return;
 
-    let startDate = new Date(); // Default to NOW
+    let startDate = customStartDate ? new Date(customStartDate) : new Date();
     let endDate;
     let durationDays;
-
-    if (customStartDate) {
-        startDate = new Date(customStartDate);
-    }
 
     if (customEndDate) {
       endDate = new Date(customEndDate);
       endDate.setHours(23, 59, 59, 999);
-      
-      const diffTime = endDate - startDate;
-      durationDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-    } 
-    else if (duration) {
+      durationDays = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)); 
+    } else if (duration) {
       durationDays = parseFloat(duration);
       endDate = new Date(startDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
-    } 
-    else {
+    } else {
         alert("Please provide either a Duration (Days) or an End Date.");
         return;
+    }
+
+    let modules = [];
+    let finalTaskTotal = 0;
+    let finalTaskName = "Tasks";
+
+    if (trackMode === "syllabus" && syllabusInput.trim()) {
+        modules = parseSyllabus(syllabusInput);
+        finalTaskTotal = modules.reduce((acc, mod) => acc + mod.lectures.length, 0);
+        finalTaskName = "Lectures";
+    } else if (trackMode === "manual" && taskTotal) {
+        finalTaskTotal = parseInt(taskTotal || 0);
+        finalTaskName = taskName || "Tasks";
     }
 
     const newEntry = {
@@ -70,145 +191,240 @@ export default function GateTracker() {
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
       durationDays: durationDays,
-      taskName: hasTask ? (taskName || "Tasks") : null,
-      taskTotal: hasTask ? parseInt(taskTotal || 0) : 0,
+      taskName: finalTaskName,
+      taskTotal: finalTaskTotal,
       taskCompleted: 0,
-      isManuallyCompleted: false // NEW FLAG
+      isManuallyCompleted: false,
+      modules: modules
     };
 
-    setSubjects([...subjects, newEntry]);
+    saveToDB([...subjects, newEntry]);
     
-    // Reset Form
-    setNewSubject("");
-    setDuration("");
-    setCustomStartDate("");
-    setCustomEndDate("");
-    setHasTask(false);
-    setTaskName("");
-    setTaskTotal("");
+    setNewSubject(""); setDuration(""); setCustomStartDate(""); setCustomEndDate("");
+    setTrackMode("manual"); setTaskName(""); setTaskTotal(""); setSyllabusInput("");
   };
 
   const deleteSubject = (id) => {
-    setSubjects(subjects.filter((s) => s.id !== id));
+    saveToDB(subjects.filter((s) => s.id !== id));
+    if (activeSubjectId === id) setActiveSubjectId(null);
   };
 
-  // --- Update Logic ---
   const updateSubject = (id, newStartIso, newEndIso, newTaskTotal, isManuallyCompleted) => {
     const updated = subjects.map(s => {
         if (s.id === id) {
             const start = new Date(newStartIso);
             const end = new Date(newEndIso);
             end.setHours(23, 59, 59, 999);
-
-            const diffTime = end - start;
-            const newDuration = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
             return {
                 ...s,
                 startDate: start.toISOString(),
                 endDate: end.toISOString(),
-                durationDays: newDuration,
+                durationDays: Math.ceil((end - start) / (1000 * 60 * 60 * 24)),
                 taskTotal: newTaskTotal !== undefined ? Math.max(s.taskCompleted, parseInt(newTaskTotal || 0)) : s.taskTotal,
                 isManuallyCompleted: isManuallyCompleted
             };
         }
         return s;
     });
-    setSubjects(updated);
+    saveToDB(updated);
   };
 
   const addToProgress = (id, amountToAdd) => {
     const val = parseInt(amountToAdd);
     if (isNaN(val) || val === 0) return;
-
     const updated = subjects.map(s => {
         if (s.id === id) {
-            const newTotal = (s.taskCompleted || 0) + val;
-            return { ...s, taskCompleted: Math.min(newTotal, s.taskTotal) }; 
+            return { ...s, taskCompleted: Math.min((s.taskCompleted || 0) + val, s.taskTotal) }; 
         }
         return s;
     });
-    setSubjects(updated);
+    saveToDB(updated);
   };
 
+  const toggleLecture = (subjectId, moduleId, lectureId) => {
+    const updated = subjects.map(s => {
+        if (s.id !== subjectId) return s;
+        const newModules = s.modules.map(m => {
+            if (m.id !== moduleId) return m;
+            return {
+                ...m,
+                lectures: m.lectures.map(l => l.id === lectureId ? { ...l, isCompleted: !l.isCompleted } : l)
+            };
+        });
+        const newCompletedCount = newModules.reduce((acc, m) => acc + m.lectures.filter(l => l.isCompleted).length, 0);
+        return { ...s, modules: newModules, taskCompleted: newCompletedCount };
+    });
+    saveToDB(updated);
+  };
+
+  // --- RENDER DETAIL VIEW ---
+  if (activeSubjectId) {
+      const subject = subjects.find(s => s.id === activeSubjectId);
+      if (!subject) return null;
+      return <SyllabusDetailView subject={subject} onBack={() => setActiveSubjectId(null)} onToggleLecture={toggleLecture} />;
+  }
+
+  // --- RENDER DASHBOARD ---
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 font-mono flex flex-col">
-      {/* --- HEADER --- */}
+      
+      {/* AUTH MODAL */}
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-gray-800 border border-gray-700 p-6 rounded-lg w-full max-w-sm shadow-2xl relative">
+                <button onClick={() => setShowAuthModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white"><X size={20}/></button>
+                <h2 className="text-2xl font-bold text-blue-400 mb-6 text-center">
+                    {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
+                </h2>
+                <form onSubmit={handleAuthSubmit} className="flex flex-col gap-4">
+                    <input type="text" name="username" placeholder="Username" required className="bg-gray-700 border border-gray-600 rounded px-3 py-2 outline-none focus:border-blue-500 text-white" />
+                    <input type="password" name="password" placeholder="Password" required className="bg-gray-700 border border-gray-600 rounded px-3 py-2 outline-none focus:border-blue-500 text-white" />
+                    {authError && <p className="text-red-400 text-sm text-center">{authError}</p>}
+                    <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded transition-colors mt-2">
+                        {authMode === 'login' ? 'Login' : 'Sign Up'}
+                    </button>
+                </form>
+                <div className="mt-4 text-center text-sm text-gray-400">
+                    {authMode === 'login' ? "Don't have an account? " : "Already have an account? "}
+                    <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-blue-400 hover:underline">
+                        {authMode === 'login' ? 'Sign Up' : 'Login'}
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
       <header className="p-4 bg-gray-800 border-b border-gray-700 shadow-lg z-20">
         <div className="flex items-center justify-between mb-4">
             <h1 className="text-xl font-bold text-blue-400 flex items-center gap-2">
                 <Activity /> GATE CSE TRACKER
             </h1>
-        </div>
-
-        <form onSubmit={addSubject} className="flex flex-col gap-4">
-            <div className="flex flex-wrap gap-4 items-end bg-gray-800/50">
-                <div className="flex flex-col gap-1">
-                    <label className="text-xs text-gray-400">Subject Name</label>
-                    <input type="text" placeholder="e.g. DBMS" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-48 outline-none focus:border-blue-500" />
-                </div>
-
-                <div className="flex flex-col gap-1">
-                    <label className="text-xs text-gray-400">Start Date (Optional)</label>
-                    <input 
-                        type="date" 
-                        value={customStartDate} 
-                        onChange={(e) => setCustomStartDate(e.target.value)} 
-                        className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-36 outline-none text-sm text-gray-300 focus:border-blue-500"
-                    />
-                </div>
-                
-                <div className="flex flex-col gap-1">
-                    <label className={`text-xs ${customEndDate ? 'text-gray-600' : 'text-gray-400'}`}>Days Duration</label>
-                    <input type="number" placeholder="15" value={duration} disabled={!!customEndDate} onChange={(e) => setDuration(e.target.value)} className={`bg-gray-700 border border-gray-600 rounded px-3 py-2 w-24 outline-none ${customEndDate ? 'opacity-30' : ''}`} />
-                </div>
-
-                <div className="flex items-center gap-2 text-sm text-gray-500 font-bold px-2">OR</div>
-
-                <div className="flex flex-col gap-1">
-                    <label className={`text-xs ${duration ? 'text-gray-600' : 'text-gray-400'}`}>End Date</label>
-                    <input type="date" value={customEndDate} disabled={!!duration} onChange={(e) => setCustomEndDate(e.target.value)} className={`bg-gray-700 border border-gray-600 rounded px-3 py-2 w-36 outline-none text-sm text-gray-300 ${duration ? 'opacity-30' : ''}`} />
-                </div>
-            </div>
-
-            <div className="flex flex-wrap gap-4 items-center border-t border-gray-700 pt-3">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input type="checkbox" checked={hasTask} onChange={(e) => setHasTask(e.target.checked)} className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-600" />
-                    <span className="text-sm text-gray-300">Add Task Goal?</span>
-                </label>
-
-                {hasTask && (
+            
+            {/* Custom Auth UI Nav */}
+            <div className="flex items-center gap-4">
+                {!isAuthenticated ? (
+                    <button onClick={() => setShowAuthModal(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded font-bold transition-colors flex items-center gap-2 text-sm">
+                        <UserIcon size={16}/> Log In
+                    </button>
+                ) : (
                     <>
-                        <input type="text" placeholder="Unit (e.g. Videos)" value={taskName} onChange={(e) => setTaskName(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-1 w-40 text-sm outline-none focus:border-blue-500" />
-                        <input type="number" placeholder="Total (e.g. 50)" value={taskTotal} onChange={(e) => setTaskTotal(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-1 w-32 text-sm outline-none focus:border-blue-500" />
+                        {/* <button onClick={handleMigrate} className="flex items-center gap-2 text-xs bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-500 border border-yellow-500/50 px-3 py-1.5 rounded transition-colors" title="Move local storage data to cloud">
+                            <Database size={14} /> Migrate Local Data
+                        </button> */}
+                        <button onClick={handleLogout} className="text-gray-400 hover:text-red-400 transition-colors cursor-pointer" title="Logout">
+                        <div className="flex items-center gap-3 bg-gray-700/50 px-3 py-1.5 rounded border border-gray-600">
+                            <span className="text-sm font-bold text-gray-300">Hi, {username}</span>
+                            
+                                <LogOut size={16} />
+                        </div>
+                            </button>
                     </>
                 )}
-
-                <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-1.5 rounded flex items-center gap-2 transition-colors ml-auto text-sm">
-                    <Plus size={16} /> Add Tracker
-                </button>
             </div>
-        </form>
+        </div>
+
+        {isAuthenticated && (
+            <form onSubmit={addSubject} className="flex flex-col gap-4">
+                <div className="flex flex-wrap gap-4 items-end bg-gray-800/50">
+                    <div className="flex flex-col gap-1">
+                        <label className="text-xs text-gray-400">Subject Name</label>
+                        <input required type="text" placeholder="e.g. DBMS" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-48 outline-none focus:border-blue-500" />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-xs text-gray-400">Start Date (Optional)</label>
+                        <input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-36 outline-none text-sm text-gray-300 focus:border-blue-500" />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                        <label className={`text-xs ${customEndDate ? 'text-gray-600' : 'text-gray-400'}`}>Days Duration</label>
+                        <input type="number" placeholder="15" value={duration} disabled={!!customEndDate} onChange={(e) => setDuration(e.target.value)} className={`bg-gray-700 border border-gray-600 rounded px-3 py-2 w-24 outline-none ${customEndDate ? 'opacity-30' : ''}`} />
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-500 font-bold px-2">OR</div>
+                    <div className="flex flex-col gap-1">
+                        <label className={`text-xs ${duration ? 'text-gray-600' : 'text-gray-400'}`}>End Date</label>
+                        <input type="date" value={customEndDate} disabled={!!duration} onChange={(e) => setCustomEndDate(e.target.value)} className={`bg-gray-700 border border-gray-600 rounded px-3 py-2 w-36 outline-none text-sm text-gray-300 ${duration ? 'opacity-30' : ''}`} />
+                    </div>
+                </div>
+
+                <div className="flex flex-col gap-3 border-t border-gray-700 pt-3">
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm text-gray-400">Task Tracking Setup:</span>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="trackMode" checked={trackMode === "none"} onChange={() => setTrackMode("none")} className="text-blue-500 bg-gray-700" />
+                            <span className="text-sm text-gray-300">None</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="trackMode" checked={trackMode === "manual"} onChange={() => setTrackMode("manual")} className="text-blue-500 bg-gray-700" />
+                            <span className="text-sm text-gray-300">Manual Numbers</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="trackMode" checked={trackMode === "syllabus"} onChange={() => setTrackMode("syllabus")} className="text-blue-500 bg-gray-700" />
+                            <span className="text-sm text-gray-300 text-blue-400 font-semibold">Paste Syllabus (Auto-Todo)</span>
+                        </label>
+                    </div>
+
+                    {trackMode === "manual" && (
+                        <div className="flex gap-2 items-center">
+                            <input type="text" placeholder="Unit (e.g. PYQs)" value={taskName} onChange={(e) => setTaskName(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-1.5 w-40 text-sm outline-none focus:border-blue-500" />
+                            <input type="number" placeholder="Total (e.g. 150)" value={taskTotal} onChange={(e) => setTaskTotal(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-3 py-1.5 w-32 text-sm outline-none focus:border-blue-500" />
+                        </div>
+                    )}
+
+                    {trackMode === "syllabus" && (
+                        <div className="flex flex-col gap-2">
+                            <textarea 
+                                placeholder="Paste your syllabus here... (e.g., - Lecture 1 - Title [Timing: 30:00])" 
+                                value={syllabusInput} 
+                                onChange={(e) => setSyllabusInput(e.target.value)} 
+                                className="bg-gray-700/50 border border-gray-600 rounded p-3 w-full h-32 text-sm outline-none focus:border-blue-500 resize-y font-mono"
+                            />
+                        </div>
+                    )}
+
+                    <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded flex items-center justify-center gap-2 transition-colors text-sm w-48 mt-2">
+                        <Plus size={16} /> Add Tracker
+                    </button>
+                </div>
+            </form>
+        )}
       </header>
 
-      {/* --- STRIPS --- */}
-      <main className="flex-grow overflow-y-auto pb-20">
-        {subjects.length === 0 ? (
+      <main className="flex-grow overflow-y-auto pb-20 p-4">
+        {isLoading ? (
+             <div className="h-full flex items-center justify-center text-gray-500 text-xl">Loading Data...</div>
+        ) : !isAuthenticated ? (
+            <div className="h-full flex flex-col items-center justify-center text-gray-500 gap-4">
+                <Clock size={64} className="opacity-50" />
+                <p className="text-xl">Please log in to view your tracker.</p>
+                <button onClick={() => setShowAuthModal(true)} className="bg-blue-600/20 text-blue-400 border border-blue-500/50 px-6 py-2 rounded font-bold hover:bg-blue-600/40 transition-colors">
+                    Log In
+                </button>
+            </div>
+        ) : subjects.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-500 opacity-50">
             <Clock size={64} className="mb-4" />
             <p className="text-xl">No active subjects.</p>
           </div>
         ) : (
-          <div className="flex flex-col">
-            {subjects.map((subject) => (
-              <SubjectStrip 
-                key={subject.id} 
-                subject={subject} 
-                currentTime={currentTime} 
-                onDelete={deleteSubject}
-                onAddToProgress={addToProgress}
-                onUpdate={updateSubject}
-              />
+          <div className="flex flex-col gap-4">
+            {subjects.map((subject, index) => (
+              <div 
+                key={subject.id}
+                draggable
+                onDragStart={() => dragItem.current = index}
+                onDragEnter={() => dragOverItem.current = index}
+                onDragEnd={handleSort}
+                onDragOver={(e) => e.preventDefault()}
+                className="cursor-move"
+              >
+                  <SubjectStrip 
+                    subject={subject} 
+                    currentTime={currentTime} 
+                    onDelete={deleteSubject}
+                    onAddToProgress={addToProgress}
+                    onUpdate={updateSubject}
+                    onOpenDetail={() => setActiveSubjectId(subject.id)}
+                  />
+              </div>
             ))}
           </div>
         )}
@@ -217,12 +433,82 @@ export default function GateTracker() {
   );
 }
 
-// --- SUB-COMPONENT ---
-function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdate }) {
+// --- SUB-COMPONENT: DETAIL VIEW ---
+function SyllabusDetailView({ subject, onBack, onToggleLecture }) {
+    let totalMins = 0; let completedMins = 0;
+    subject.modules.forEach(m => {
+        m.lectures.forEach(l => {
+            totalMins += l.durationMin;
+            if (l.isCompleted) completedMins += l.durationMin;
+        });
+    });
+
+    const isFullyComplete = subject.taskTotal > 0 && subject.taskCompleted >= subject.taskTotal;
+    const progressPerc = subject.taskTotal > 0 ? (subject.taskCompleted / subject.taskTotal) * 100 : 0;
+    const hrsTotal = (totalMins / 60).toFixed(1);
+    const hrsLeft = ((totalMins - completedMins) / 60).toFixed(1);
+
+    return (
+        <div className="min-h-screen bg-gray-900 text-gray-100 font-mono flex flex-col">
+            <div className="sticky top-0 z-30 bg-gray-800 border-b border-gray-700 shadow-xl p-4">
+                <button onClick={onBack} className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors mb-4">
+                    <ChevronLeft size={20} /> Back to Dashboard
+                </button>
+                <div className="flex justify-between items-end">
+                    <div>
+                        <h1 className="text-3xl font-bold text-white mb-2">{subject.title}</h1>
+                        <div className="flex gap-4 text-sm text-gray-400">
+                            <span><List size={14} className="inline mr-1"/> {subject.taskCompleted} / {subject.taskTotal} Lectures</span>
+                            <span><Clock size={14} className="inline mr-1"/> {hrsLeft} hrs remaining (of {hrsTotal} hrs)</span>
+                        </div>
+                    </div>
+                    {isFullyComplete && <div className="text-green-500 font-bold border border-green-500 px-3 py-1 rounded">ALL COMPLETED</div>}
+                </div>
+                <div className="w-full h-2 bg-gray-700 rounded-full mt-4 overflow-hidden">
+                    <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${progressPerc}%` }}></div>
+                </div>
+            </div>
+
+            <div className="flex-grow p-4 overflow-y-auto max-w-5xl mx-auto w-full">
+                {subject.modules.map((mod) => {
+                    const modCompleted = mod.lectures.filter(l => l.isCompleted).length;
+                    return (
+                        <div key={mod.id} className="mb-8 bg-gray-800/30 border border-gray-700 rounded-lg overflow-hidden">
+                            <div className="bg-gray-800 p-3 border-b border-gray-700 flex justify-between items-center">
+                                <h2 className="font-bold text-lg text-blue-300">{mod.title}</h2>
+                                <span className="text-xs text-gray-500 font-bold bg-gray-900 px-2 py-1 rounded">
+                                    {modCompleted}/{mod.lectures.length}
+                                </span>
+                            </div>
+                            <div className="divide-y divide-gray-700/50">
+                                {mod.lectures.map(lecture => (
+                                    <label key={lecture.id} className={`flex items-start gap-4 p-3 cursor-pointer hover:bg-gray-700/40 transition-colors ${lecture.isCompleted ? 'opacity-60 bg-gray-800/20' : ''}`}>
+                                        <div className="mt-1">
+                                            <input type="checkbox" checked={lecture.isCompleted} onChange={() => onToggleLecture(subject.id, mod.id, lecture.id)} className="sr-only" />
+                                            {lecture.isCompleted ? <CheckSquare className="text-green-500" size={20} /> : <Square className="text-gray-500" size={20} />}
+                                        </div>
+                                        <div className="flex-grow">
+                                            <p className={`text-sm ${lecture.isCompleted ? 'line-through text-gray-500' : 'text-gray-200'}`}>{lecture.title}</p>
+                                        </div>
+                                        <div className="text-xs text-gray-500 font-mono bg-gray-900/50 px-2 py-1 rounded whitespace-nowrap">
+                                            {lecture.durationMin > 0 ? `${lecture.durationMin} mins` : 'No Time'}
+                                        </div>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+// --- SUB-COMPONENT: DASHBOARD STRIP ---
+function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdate, onOpenDetail }) {
   const [addAmount, setAddAmount] = useState(""); 
-  
-  // -- Edit Mode States --
   const [isEditing, setIsEditing] = useState(false);
+  
   const [tempStart, setTempStart] = useState("");
   const [tempEnd, setTempEnd] = useState("");
   const [tempTaskTotal, setTempTaskTotal] = useState("");
@@ -230,13 +516,10 @@ function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdat
 
   const start = new Date(subject.startDate);
   const end = new Date(subject.endDate);
-  const now = currentTime;
-
+  const timeElapsed = currentTime - start;
+  const timeLeft = end - currentTime;
   const totalDuration = end - start;
-  const timeElapsed = now - start;
-  const timeLeft = end - now;
 
-  // --- Dynamic Status Calculations ---
   const isBeforeStart = timeElapsed < 0;
   const isEnded = timeLeft <= 0 && !isBeforeStart;
   const isRunning = !isBeforeStart && !isEnded;
@@ -245,49 +528,30 @@ function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdat
   const daysToStart = Math.ceil(Math.abs(timeElapsed) / (1000 * 60 * 60 * 24));
   const daysRunningLeft = Math.max(0, Math.ceil(timeLeft / (1000 * 60 * 60 * 24)));
 
-  let statusText = "";
-  let statusColor = "";
-  let displayValue = 0;
-  let displayLabel = "";
+  let statusText = ""; let statusColor = ""; let displayValue = 0; let displayLabel = "";
 
-  if (isFullyComplete) {
-      statusText = "Completed";
-      statusColor = "text-green-500";
-      displayValue = 0;
-      displayLabel = "Finished";
-  } else if (isBeforeStart) {
-      statusText = "Upcoming";
-      statusColor = "text-orange-500";
-      displayValue = daysToStart;
-      displayLabel = "Days to Start";
-  } else if (isEnded) {
-      statusText = "Ended";
-      statusColor = "text-red-500";
-      displayValue = 0;
-      displayLabel = "Days Left";
-  } else {
-      statusText = "Running";
-      statusColor = "text-green-500";
-      displayValue = daysRunningLeft;
-      displayLabel = "Days Left";
-  }
+  if (isFullyComplete) { statusText = "Completed"; statusColor = "text-green-500"; displayValue = 0; displayLabel = "Finished"; } 
+  else if (isBeforeStart) { statusText = "Upcoming"; statusColor = "text-orange-500"; displayValue = daysToStart; displayLabel = "Days to Start"; } 
+  else if (isEnded) { statusText = "Ended"; statusColor = "text-red-500"; displayValue = 0; displayLabel = "Days Left"; } 
+  else { statusText = "Running"; statusColor = "text-green-500"; displayValue = daysRunningLeft; displayLabel = "Days Left"; }
 
-  // Visual Progress Bar (Background)
-  let progress = 0;
-  if (isFullyComplete || isEnded) progress = 100;
-  else if (isRunning) progress = Math.min(100, Math.max(0, (timeElapsed / totalDuration) * 100));
+  let progress = isFullyComplete || isEnded ? 100 : isRunning ? Math.min(100, Math.max(0, (timeElapsed / totalDuration) * 100)) : 0;
 
-  // Task Math
   const hasTask = subject.taskTotal > 0;
+  const hasSyllabus = subject.modules && subject.modules.length > 0;
   const remainingTasks = Math.max(0, subject.taskTotal - subject.taskCompleted);
   
-  // Pace Calculation
-  const activeDaysForPace = isBeforeStart 
-        ? (totalDuration / (1000 * 60 * 60 * 24)) 
-        : Math.max(0, timeLeft / (1000 * 60 * 60 * 24));
-        
+  const activeDaysForPace = isBeforeStart ? (totalDuration / (1000 * 60 * 60 * 24)) : Math.max(0, timeLeft / (1000 * 60 * 60 * 24));
   const dailyRate = hasTask ? (remainingTasks / Math.max(0.5, activeDaysForPace)).toFixed(1) : 0;
   const taskProgress = hasTask ? (subject.taskCompleted / subject.taskTotal) * 100 : 0;
+
+  let totalMins = 0; let completedMins = 0;
+  if (hasSyllabus) {
+      subject.modules.forEach(m => {
+          m.lectures.forEach(l => { totalMins += l.durationMin; if (l.isCompleted) completedMins += l.durationMin; });
+      });
+  }
+  const hrsLeft = ((totalMins - completedMins) / 60).toFixed(1);
 
   const handleAddSubmit = (e) => {
     e.preventDefault();
@@ -312,138 +576,115 @@ function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdat
   };
 
   return (
-    <div className="relative w-full h-[20vh] min-h-[170px] border-b border-gray-700 flex bg-gray-800/40 hover:bg-gray-800 transition-colors group overflow-hidden">
+    <div className="relative w-full border border-gray-700 flex flex-col rounded-lg bg-gray-800/40 hover:bg-gray-800 transition-colors group overflow-hidden">
       
       {/* Background Time Progress */}
-      <div 
-        className="absolute top-0 left-0 h-full bg-blue-900/10 pointer-events-none transition-all duration-1000"
-        style={{ width: `${progress}%` }}
-      />
-      
-      {/* Bottom Line Indicator */}
-      <div className="absolute bottom-0 left-0 w-full h-1 bg-gray-700">
-        <div 
-          className={`h-full transition-all duration-1000 ${isFullyComplete ? 'bg-green-500' : isEnded ? 'bg-red-500' : isBeforeStart ? 'bg-orange-500' : 'bg-green-500'}`}
-          style={{ width: `${progress}%` }}
-        />
+      <div className="absolute top-0 left-0 h-full bg-blue-900/10 pointer-events-none transition-all duration-1000" style={{ width: `${progress}%` }} />
+      <div className="absolute bottom-0 left-0 w-full h-1.5 bg-gray-700">
+        <div className={`h-full transition-all duration-1000 ${isFullyComplete ? 'bg-green-500' : isEnded ? 'bg-red-500' : isBeforeStart ? 'bg-orange-500' : 'bg-green-500'}`} style={{ width: `${progress}%` }} />
       </div>
 
-      <div className="relative z-10 flex w-full h-full">
+      {/* Grid Layout */}
+      <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-6 p-5 items-center w-full">
         
-        {/* SECTION 1: Info & Task Input */}
-        <div className="w-[35%] flex flex-col justify-center px-6 border-r border-gray-700/50">
-          <div className="flex justify-between items-start">
-             <h2 className={`text-2xl font-bold truncate mb-1 ${isFullyComplete ? 'text-green-400' : 'text-white'}`} title={subject.title}>
-               {subject.title} {isFullyComplete && <CheckCircle className="inline ml-2" size={20} />}
-             </h2>
+        {/* Drag Handle & Info - 5 columns */}
+        <div className="lg:col-span-5 flex flex-col justify-center border-b lg:border-b-0 lg:border-r border-gray-700/50 pb-4 lg:pb-0 lg:pr-6">
+          <div className="flex justify-between items-start mb-2">
+             <div className="flex items-center gap-3">
+                 <GripVertical className="text-gray-600 hover:text-gray-400 cursor-grab active:cursor-grabbing" size={20} />
+                 <h2 className={`text-2xl font-bold truncate flex items-center gap-2 cursor-pointer ${isFullyComplete ? 'text-green-400' : 'text-white hover:text-blue-300 transition-colors'}`} onClick={hasSyllabus ? onOpenDetail : undefined} title={subject.title}>
+                   {subject.title} {isFullyComplete && <CheckCircle size={20} />}
+                 </h2>
+             </div>
              {!isEditing && (
-                 <button onClick={startEditing} className="text-gray-500 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity" title="Edit Dates and Tasks">
+                 <button onClick={startEditing} className="text-gray-500 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity">
                      <Edit2 size={16} />
                  </button>
              )}
           </div>
 
-          {/* EDIT PANEL */}
           {isEditing ? (
               <div className="flex flex-col gap-3 my-2 bg-gray-900/90 p-3 rounded-lg border border-gray-600 shadow-xl z-50">
                   <div className="flex gap-3">
                     <div className="flex flex-col gap-1 w-1/2">
-                        <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Start Date</label>
-                        <input type="date" value={tempStart} onChange={(e) => setTempStart(e.target.value)} className="bg-gray-800 text-xs p-1.5 rounded outline-none border border-gray-600 focus:border-blue-500 transition-colors" />
+                        <label className="text-[10px] text-gray-400 font-semibold uppercase">Start</label>
+                        <input type="date" value={tempStart} onChange={(e) => setTempStart(e.target.value)} className="bg-gray-800 text-xs p-1.5 rounded outline-none border border-gray-600 focus:border-blue-500" />
                     </div>
                     <div className="flex flex-col gap-1 w-1/2">
-                        <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">End Date</label>
-                        <input type="date" value={tempEnd} onChange={(e) => setTempEnd(e.target.value)} className="bg-gray-800 text-xs p-1.5 rounded outline-none border border-gray-600 focus:border-blue-500 transition-colors" />
+                        <label className="text-[10px] text-gray-400 font-semibold uppercase">End</label>
+                        <input type="date" value={tempEnd} onChange={(e) => setTempEnd(e.target.value)} className="bg-gray-800 text-xs p-1.5 rounded outline-none border border-gray-600 focus:border-blue-500" />
                     </div>
                   </div>
-                  
-                  <div className="flex items-center justify-between gap-3">
-                      {hasTask && (
-                          <div className="flex flex-col gap-1 flex-grow">
-                              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Total Goal ({subject.taskName})</label>
-                              <input type="number" value={tempTaskTotal} onChange={(e) => setTempTaskTotal(e.target.value)} className="bg-gray-800 text-xs p-1.5 rounded outline-none border border-gray-600 focus:border-blue-500 transition-colors w-full" />
-                          </div>
-                      )}
-                      
-                      {/* TOGGLE SWITCH */}
-                      <div className="flex flex-col gap-1 items-end justify-center mt-2">
-                          <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" checked={tempIsCompleted} onChange={e => setTempIsCompleted(e.target.checked)} />
-                            <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"></div>
-                            <span className="ml-2 text-[10px] font-semibold text-gray-300 uppercase tracking-wider">Complete</span>
-                          </label>
-                      </div>
-                  </div>
-
                   <div className="flex gap-2 mt-1 pt-2 border-t border-gray-700">
-                      <button onClick={saveEdit} className="bg-blue-600 hover:bg-blue-500 text-white p-1.5 rounded flex-1 flex justify-center items-center gap-2 text-xs font-bold transition-colors"><Save size={14}/> Save Changes</button>
-                      <button onClick={() => setIsEditing(false)} className="bg-gray-700 hover:bg-gray-600 text-white p-1.5 rounded w-10 flex justify-center items-center transition-colors"><X size={14}/></button>
+                      <button onClick={saveEdit} className="bg-blue-600 hover:bg-blue-500 text-white p-1.5 rounded flex-1 flex justify-center items-center gap-2 text-xs font-bold"><Save size={14}/> Save</button>
+                      <button onClick={() => setIsEditing(false)} className="bg-gray-700 hover:bg-gray-600 text-white p-1.5 rounded w-10 flex justify-center items-center"><X size={14}/></button>
                   </div>
               </div>
           ) : (
-             <div className="text-xs text-gray-400 mb-4 flex flex-col gap-1">
+             <div className="text-xs text-gray-400 mb-4 flex flex-col gap-1 ml-8">
                  <span className="flex items-center gap-1"><Calendar size={12}/> Start: {start.toLocaleDateString()}</span>
                  <span className="flex items-center gap-1"><Clock size={12}/> Target: {end.toLocaleDateString()}</span>
              </div>
           )}
 
-          {/* Task Control Area */}
-          {!isEditing && hasTask && !isFullyComplete ? (
-            <div className="bg-gray-900/60 p-3 rounded border border-gray-700 shadow-inner">
+          {!isEditing && hasTask && !isFullyComplete && (
+            <div className="bg-gray-900/60 p-3 rounded border border-gray-700 shadow-inner ml-8">
                 <div className="flex justify-between items-center text-xs text-gray-300 mb-1">
-                    <span>Completed {subject.taskName}:</span>
+                    <span>{hasSyllabus ? 'Completed Lectures:' : `Completed ${subject.taskName}:`}</span>
                     <span className="font-bold text-blue-400">{subject.taskCompleted} / {subject.taskTotal}</span>
                 </div>
                 <div className="w-full h-1.5 bg-gray-700 rounded-full mb-3 overflow-hidden">
                     <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${taskProgress}%` }}></div>
                 </div>
                 
-                <form onSubmit={handleAddSubmit} className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500 whitespace-nowrap">Today I did:</span>
-                    <input 
-                        type="number" 
-                        value={addAmount}
-                        placeholder="0"
-                        onChange={(e) => setAddAmount(e.target.value)}
-                        className="bg-gray-800 border border-gray-600 rounded w-16 px-2 py-1 text-sm text-center focus:border-blue-500 outline-none"
-                    />
-                    <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white p-1 rounded transition-colors" title="Add to total">
-                        <Plus size={16} />
+                {hasSyllabus ? (
+                    <button onClick={onOpenDetail} className="w-full bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/50 text-blue-400 py-2 rounded text-xs font-bold flex items-center justify-center gap-2 transition-colors">
+                        <FileText size={14} /> Open Checklist
                     </button>
-                </form>
+                ) : (
+                    <form onSubmit={handleAddSubmit} className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500 whitespace-nowrap">Today I did:</span>
+                        <input type="number" value={addAmount} placeholder="0" onChange={(e) => setAddAmount(e.target.value)} className="bg-gray-800 border border-gray-600 rounded w-16 px-2 py-1 text-sm text-center focus:border-blue-500 outline-none" />
+                        <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white p-1 rounded"><Plus size={16} /></button>
+                    </form>
+                )}
             </div>
-          ) : !isEditing && !hasTask && !isFullyComplete && (
-            <div className="text-sm text-gray-500 italic">No counting task set.</div>
           )}
         </div>
 
-        {/* SECTION 2: The "Pace" (Center) */}
-        <div className="flex-grow flex flex-col items-center justify-center border-r border-gray-700/50 px-4">
+        {/* Pace / Time Center - 4 columns */}
+        <div className="lg:col-span-4 flex flex-col items-center justify-center border-b lg:border-b-0 lg:border-r border-gray-700/50 pb-4 lg:pb-0 px-4">
             {isFullyComplete ? (
                  <div className="text-green-500 font-bold text-3xl flex items-center gap-3 tracking-widest"><CheckCircle size={36} /> DONE</div>
-            ) : hasTask && !isEnded && remainingTasks > 0 ? (
-                <div className="text-center">
+            ) : hasSyllabus && !isEnded ? (
+                <div className="text-center w-full max-w-xs">
+                    <div className="text-sm text-gray-400 uppercase tracking-widest mb-1 border-b border-gray-700 pb-1">Time Tracking</div>
+                    <div className="text-4xl font-bold text-blue-400 flex items-center justify-center gap-2 my-2">
+                        <Clock size={28} /> {hrsLeft} <span className="text-sm text-gray-500 uppercase tracking-widest mt-2">hrs left</span>
+                    </div>
+                    <div className="text-xs text-gray-400 flex justify-between px-2">
+                        <span>Pace: {dailyRate} / day</span>
+                        <span>{remainingTasks} Vids Left</span>
+                    </div>
+                </div>
+            ) : hasTask && !hasSyllabus && !isEnded ? (
+                 <div className="text-center">
                     <div className="text-sm text-gray-400 uppercase tracking-widest mb-1">Required Pace</div>
                     <div className="text-5xl font-bold text-white flex items-end justify-center gap-2 leading-none">
-                        {dailyRate}
-                        <span className="text-lg text-blue-400 font-medium mb-1">/day</span>
-                    </div>
-                    <div className="text-xs text-gray-500 mt-2">
-                        To finish {remainingTasks} {subject.taskName} on time
+                        {dailyRate}<span className="text-lg text-blue-400 font-medium mb-1">/day</span>
                     </div>
                 </div>
             ) : isEnded && remainingTasks > 0 ? (
                 <div className="text-red-500 font-bold text-2xl flex items-center gap-2"><AlertCircle /> TIME UP</div>
             ) : (
                 <div className="text-gray-600 font-bold text-xl flex flex-col items-center">
-                    <PlayCircle size={32} className="mb-2"/>
-                    <span>TRACKING TIME</span>
+                    <PlayCircle size={32} className="mb-2"/> <span>TRACKING TIME</span>
                 </div>
             )}
         </div>
 
-        {/* SECTION 3: Time Countdown (Right) */}
-        <div className="w-[20%] flex flex-col items-center justify-center relative bg-gray-800/20">
+        {/* Days Countdown Right - 3 columns */}
+        <div className="lg:col-span-3 flex flex-col items-center justify-center relative">
              <div className="text-center flex flex-col items-center justify-center">
                 {isEnded && !isFullyComplete ? (
                     <div className={`text-4xl font-bold ${statusColor} tracking-wider`}>ENDED</div>
@@ -451,12 +692,8 @@ function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdat
                     <div className={`text-4xl font-bold ${statusColor} tracking-wider`}>FINISHED</div>
                 ) : (
                     <>
-                        <div className={`text-6xl font-bold ${statusColor}`}>
-                            {displayValue}
-                        </div>
-                        <div className="text-xs uppercase tracking-widest text-gray-500 mb-2">
-                            {displayLabel}
-                        </div>
+                        <div className={`text-6xl font-bold ${statusColor}`}>{displayValue}</div>
+                        <div className="text-xs uppercase tracking-widest text-gray-500 mb-2">{displayLabel}</div>
                         <div className={`text-[10px] uppercase tracking-widest font-bold px-3 py-1 rounded-full bg-gray-900/60 border border-gray-700 ${statusColor}`}>
                             STATUS: {statusText}
                         </div>
@@ -464,11 +701,7 @@ function SubjectStrip({ subject, currentTime, onDelete, onAddToProgress, onUpdat
                 )}
             </div>
             
-            <button 
-                onClick={() => onDelete(subject.id)}
-                className="absolute top-4 right-4 text-gray-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                title="Delete Tracker"
-            >
+            <button onClick={() => onDelete(subject.id)} className="absolute top-0 right-0 lg:top-1 lg:-right-2 text-gray-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 p-2" title="Delete Tracker">
                 <Trash2 size={20} />
             </button>
         </div>
