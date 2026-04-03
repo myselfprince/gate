@@ -509,20 +509,107 @@ export default function GateTracker() {
   };
 
   // ── Syllabus parser (unchanged) ──
-  const parseSyllabus = (text) => {
-    const lines = text.split('\n');
-    const modules = [];
-    let currentModule = null;
+ const parseSyllabus = (text) => {
+  const lines = text.split('\n');
+  const modules = [];
+  let currentModule = null;
+
+  // ── Detect Go Classes tab-separated format ──────────────────────────────────
+  // Go Classes exports look like: "ondemand_video\tTitle 199:00\t"
+  // Module headers either start with \t or use "label_important\t..."
+  const isGoClassesFormat = lines.some(l => {
+    return /^(ondemand_video|live_tv|picture_as_pdf|description|label_important)\t/.test(l.trim())
+        || /^\t/.test(l);  // raw line starts with a tab → module header
+  });
+
+  if (isGoClassesFormat) {
+    for (let i = 0; i < lines.length; i++) {
+      const raw  = lines[i];       // keep raw so we can detect a leading \t
+      const line = raw.trim();
+      if (!line) continue;
+
+      const parts = line.split('\t').map(p => p.trim()).filter(Boolean);
+      if (parts.length === 0) continue;
+
+      const icon    = parts[0];
+      const content = parts[1] || '';
+
+      // ── Module header ──────────────────────────────────────────────────────
+      //  • raw line starts with \t  →  the tab-stripped text IS the title
+      //  • icon === 'label_important'  →  content is the title
+      const isModuleLine =
+        raw.startsWith('\t') ||
+        icon === 'label_important' ||
+        /^Module\s+\d+/i.test(icon);
+
+      if (isModuleLine) {
+        const title = (icon === 'label_important') ? content : icon;
+        if (!title) continue;
+        currentModule = {
+          id: `mod_${Date.now()}_${i}`,
+          title,
+          lectures: [],
+          isExpanded: false,
+        };
+        modules.push(currentModule);
+        continue;
+      }
+
+      // ── Video lectures only (skip PDFs / description / PYQ sheets) ─────────
+      if (icon === 'ondemand_video' || icon === 'live_tv') {
+        if (!currentModule) {
+          currentModule = {
+            id: `mod_general_${Date.now()}_${i}`,
+            title: 'General',
+            lectures: [],
+            isExpanded: false,
+          };
+          modules.push(currentModule);
+        }
+
+        let title       = content;
+        let durationMin = 0;
+
+        // Duration pattern at end of title: "199:00"  "21:00"  "166:00"
+        // Format is MM:SS where MM can be > 60 — we just want the minute count
+        const durMatch = title.match(/\s+(\d+):(\d{2})\s*$/);
+        if (durMatch) {
+          durationMin = parseInt(durMatch[1], 10);
+          title       = title.replace(durMatch[0], '').trim();
+        }
+
+        currentModule.lectures.push({
+          id:          `lec_${Date.now()}_${i}_${Math.random()}`,
+          title,
+          durationMin,
+          isCompleted:  false,
+          isTodayGoal:  false,
+        });
+      }
+      // picture_as_pdf / description → silently skipped (notes, PYQ sheets)
+    }
+
+  } else {
+    // ── Original dash-based format ───────────────────────────────────────────
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i].trim();
       if (!line || line.startsWith('===')) continue;
+
       if (!line.startsWith('-')) {
-        currentModule = { id: `mod_${Date.now()}_${i}`, title: line, lectures: [], isExpanded: false };
+        currentModule = {
+          id: `mod_${Date.now()}_${i}`,
+          title: line,
+          lectures: [],
+          isExpanded: false,
+        };
         modules.push(currentModule);
       } else {
-        const timeMatch = line.match(/\[Timing:\s*([^\]]+)\]/i) || line.match(/\[Time:\s*([^\]]+)\]/i);
+        const timeMatch =
+          line.match(/\[Timing:\s*([^\]]+)\]/i) ||
+          line.match(/\[Time:\s*([^\]]+)\]/i);
         let durationMin = 0;
         let cleanTitle  = line.replace(/^-?\s*/, '');
+
         if (timeMatch) {
           const timeStr = timeMatch[1].trim();
           if (timeStr.toUpperCase() !== 'NULL') {
@@ -530,17 +617,35 @@ export default function GateTracker() {
             if (parts.length >= 2) durationMin = parseInt(parts[0], 10);
             else durationMin = parseInt(timeStr, 10) || 0;
           }
-          cleanTitle = cleanTitle.replace(/\[Timing:\s*([^\]]+)\]/i, '').replace(/\[Time:\s*([^\]]+)\]/i, '').trim();
+          cleanTitle = cleanTitle
+            .replace(/\[Timing:\s*([^\]]+)\]/i, '')
+            .replace(/\[Time:\s*([^\]]+)\]/i, '')
+            .trim();
         }
+
         if (!currentModule) {
-          currentModule = { id: `mod_general_${Date.now()}_${i}`, title: "General Lectures", lectures: [], isExpanded: false };
+          currentModule = {
+            id: `mod_general_${Date.now()}_${i}`,
+            title: 'General Lectures',
+            lectures: [],
+            isExpanded: false,
+          };
           modules.push(currentModule);
         }
-        currentModule.lectures.push({ id: `lec_${Date.now()}_${i}`, title: cleanTitle, durationMin, isCompleted: false, isTodayGoal: false });
+
+        currentModule.lectures.push({
+          id:          `lec_${Date.now()}_${i}`,
+          title:       cleanTitle,
+          durationMin,
+          isCompleted:  false,
+          isTodayGoal:  false,
+        });
       }
     }
-    return modules;
-  };
+  }
+
+  return modules;
+};
 
   // ── Add subject ──
   const addSubject = (e) => {
