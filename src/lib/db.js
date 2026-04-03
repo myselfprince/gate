@@ -21,12 +21,32 @@ async function connectDB() {
   return cached.conn;
 }
 
-// Adapted Schema for Gate Tracker
+// User schema (unchanged)
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
-  password: { type: String, required: true }, 
-  subjects: { type: Array, default: [] } // Stores the tracker strips
+  password: { type: String, required: true },
+  subjects: { type: Array, default: [] }
 });
 
-export const User = mongoose.models.GateUser || mongoose.model('GateUser', userSchema, 'gate_users');
+export const User =
+  mongoose.models.GateUser ||
+  mongoose.model('GateUser', userSchema, 'gate_users');
+
+// ── NEW: Template schema ──────────────────────────────────────────────────────
+// Templates are GLOBAL — any logged-in user can browse and use them. 
+// This lets you build a todo for a subject once, then share the site URL
+// with a friend who can load the same template with one click.
+const templateSchema = new mongoose.Schema({
+  title:       { type: String, required: true },  // e.g. "TOC — Go Classes"
+  subjectName: { type: String, required: true },  // default subject name on load
+  coaching:    { type: String, default: '' },     // e.g. "Go Classes", "PW", "Love Babbar"
+  modules:     { type: Array,  default: [] },     // full module+lecture tree, completions reset
+  createdBy:   { type: String, default: 'anonymous' },
+  createdAt:   { type: Date,   default: Date.now },
+});
+
+export const Template =
+  mongoose.models.GateTemplate ||
+  mongoose.model('GateTemplate', templateSchema, 'gate_templates');
+
 export default connectDB;
