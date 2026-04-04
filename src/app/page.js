@@ -1,4 +1,4 @@
-// src/app/page.js
+// // src/app/page.js
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -7,7 +7,7 @@ import {
   PlayCircle, Edit2, Save, X, List, ChevronLeft, ChevronDown, ChevronRight,
   CheckSquare, Square, FileText, GripVertical, Database, LogOut,
   User as UserIcon, Target, Copy, Check, Flame, Pencil, Minus, Maximize2,
-  BookOpen, Bookmark, Layers,
+  BookOpen, Bookmark, Layers, Link as LinkIcon, ExternalLink
 } from 'lucide-react';
 import {
   authUser, logout, checkAuth, getSubjects, saveSubjects,
@@ -584,6 +584,7 @@ export default function GateTracker() {
           durationMin,
           isCompleted:  false,
           isTodayGoal:  false,
+          link:         '',
         });
       }
       // picture_as_pdf / description → silently skipped (notes, PYQ sheets)
@@ -639,6 +640,7 @@ export default function GateTracker() {
           durationMin,
           isCompleted:  false,
           isTodayGoal:  false,
+          link:         '',
         });
       }
     }
@@ -675,6 +677,7 @@ export default function GateTracker() {
           id: `lec_${Date.now()}_${Math.random()}`,
           isCompleted: false,
           isTodayGoal: false,
+          link: l.link || "",
         })),
       }));
       finalTaskTotal = modules.reduce((acc, mod) => acc + mod.lectures.length, 0);
@@ -776,10 +779,27 @@ export default function GateTracker() {
     saveToDB(subjects.map(s => s.id !== subjectId ? s : { ...s, modules: [...s.modules, { id: `mod_${Date.now()}`, title, lectures: [], isExpanded: true }] }));
   };
 
-  const addLecture = (subjectId, moduleId, title, durationMin) => {
+  const addLecture = (subjectId, moduleId, title, durationMin, insertIndex = null) => {
     saveToDB(subjects.map(s => {
       if (s.id !== subjectId) return s;
-      const newModules = s.modules.map(m => m.id !== moduleId ? m : { ...m, lectures: [...m.lectures, { id: `lec_${Date.now()}`, title, durationMin: parseInt(durationMin) || 0, isCompleted: false, isTodayGoal: false }] });
+      const newModules = s.modules.map(m => {
+        if (m.id !== moduleId) return m;
+        const newLec = {
+          id: `lec_${Date.now()}_${Math.random()}`,
+          title,
+          durationMin: parseInt(durationMin) || 0,
+          isCompleted: false,
+          isTodayGoal: false,
+          link: ""
+        };
+        const updatedLectures = [...m.lectures];
+        if (insertIndex !== null && insertIndex >= 0) {
+          updatedLectures.splice(insertIndex, 0, newLec);
+        } else {
+          updatedLectures.push(newLec);
+        }
+        return { ...m, lectures: updatedLectures };
+      });
       return { ...s, modules: newModules, taskTotal: newModules.reduce((a, m) => a + m.lectures.length, 0) };
     }));
   };
@@ -810,6 +830,13 @@ export default function GateTracker() {
     }));
   };
 
+  const updateLectureLink = (subjectId, moduleId, lectureId, newLink) => {
+    saveToDB(subjects.map(s => {
+      if (s.id !== subjectId) return s;
+      return { ...s, modules: s.modules.map(m => m.id !== moduleId ? m : { ...m, lectures: m.lectures.map(l => l.id === lectureId ? { ...l, link: newLink } : l) }) };
+    }));
+  };
+
   // ── DETAIL VIEW ──
   if (activeSubjectId) {
     const subject = subjects.find(s => s.id === activeSubjectId);
@@ -828,6 +855,7 @@ export default function GateTracker() {
           onAddLecture={addLecture}
           onToggleTodayGoal={toggleTodayGoal}
           onUpdateLectureDuration={updateLectureDuration}
+          onUpdateLectureLink={updateLectureLink}
           onSaveAsTemplate={() => setSavingTemplateSubject(subject)}
         />
         <FloatingGoalWidget
@@ -1040,11 +1068,11 @@ function SyllabusDetailView({
   subject, onBack,
   onToggleLecture, onToggleExpand, onDeleteModule, onDeleteLecture,
   onToggleModuleComplete, onAddModule, onAddLecture,
-  onToggleTodayGoal, onUpdateLectureDuration, onSaveAsTemplate,
+  onToggleTodayGoal, onUpdateLectureDuration, onUpdateLectureLink, onSaveAsTemplate,
 }) {
   const [addingModule,     setAddingModule]    = useState(false);
   const [newModTitle,      setNewModTitle]     = useState("");
-  const [addingLectureTo,  setAddingLectureTo] = useState(null);
+  const [addLecForm,       setAddLecForm]      = useState({ moduleId: null, index: null });
   const [newLecTitle,      setNewLecTitle]     = useState("");
   const [newLecDuration,   setNewLecDuration]  = useState("");
 
@@ -1133,28 +1161,39 @@ function SyllabusDetailView({
 
               {mod.isExpanded && (
                 <div className="divide-y divide-gray-700/50">
-                  {mod.lectures.map(lecture => (
-                    <LectureRow
-                      key={lecture.id}
-                      lecture={lecture}
-                      subjectId={subject.id}
-                      moduleId={mod.id}
-                      onToggleLecture={onToggleLecture}
-                      onToggleTodayGoal={onToggleTodayGoal}
-                      onDeleteLecture={onDeleteLecture}
-                      onUpdateLectureDuration={onUpdateLectureDuration}
-                    />
+                  {mod.lectures.map((lecture, idx) => (
+                    <React.Fragment key={lecture.id}>
+                      <LectureRow
+                        lecture={lecture}
+                        subjectId={subject.id}
+                        moduleId={mod.id}
+                        onToggleLecture={onToggleLecture}
+                        onToggleTodayGoal={onToggleTodayGoal}
+                        onDeleteLecture={onDeleteLecture}
+                        onUpdateLectureDuration={onUpdateLectureDuration}
+                        onUpdateLectureLink={onUpdateLectureLink}
+                        onInsertBelow={() => setAddLecForm({ moduleId: mod.id, index: idx + 1 })}
+                      />
+                      {addLecForm.moduleId === mod.id && addLecForm.index === idx + 1 && (
+                        <div className="p-3 bg-gray-800/40 ml-6 border-l-2 border-blue-500/50 flex gap-2 transition-all">
+                          <input autoFocus type="text" placeholder="Topic Name..." value={newLecTitle} onChange={e => setNewLecTitle(e.target.value)} className="bg-gray-700 text-sm p-1.5 rounded flex-grow outline-none border border-gray-600 focus:border-blue-500" />
+                          <input type="number" placeholder="Mins" value={newLecDuration} onChange={e => setNewLecDuration(e.target.value)} className="bg-gray-700 text-sm p-1.5 rounded w-20 outline-none border border-gray-600 focus:border-blue-500" />
+                          <button onClick={() => { if (!newLecTitle.trim()) return; onAddLecture(subject.id, mod.id, newLecTitle, newLecDuration, idx + 1); setNewLecTitle(""); setNewLecDuration(""); setAddLecForm({ moduleId: null, index: null }); }} className="bg-blue-600 hover:bg-blue-500 text-white px-3 rounded text-sm font-bold">Insert Here</button>
+                          <button onClick={() => setAddLecForm({ moduleId: null, index: null })} className="bg-gray-600 hover:bg-gray-500 text-white px-2 rounded"><X size={16} /></button>
+                        </div>
+                      )}
+                    </React.Fragment>
                   ))}
                   <div className="p-3 bg-gray-800/20">
-                    {addingLectureTo === mod.id ? (
+                    {addLecForm.moduleId === mod.id && addLecForm.index === null ? (
                       <div className="flex gap-2">
                         <input type="text" placeholder="Topic Name..." value={newLecTitle} onChange={e => setNewLecTitle(e.target.value)} className="bg-gray-700 text-sm p-1.5 rounded flex-grow outline-none border border-gray-600 focus:border-blue-500" autoFocus />
                         <input type="number" placeholder="Mins" value={newLecDuration} onChange={e => setNewLecDuration(e.target.value)} className="bg-gray-700 text-sm p-1.5 rounded w-20 outline-none border border-gray-600 focus:border-blue-500" />
-                        <button onClick={() => { if (!newLecTitle.trim()) return; onAddLecture(subject.id, mod.id, newLecTitle, newLecDuration); setNewLecTitle(""); setNewLecDuration(""); setAddingLectureTo(null); }} className="bg-blue-600 hover:bg-blue-500 text-white px-3 rounded text-sm font-bold">Add</button>
-                        <button onClick={() => setAddingLectureTo(null)} className="bg-gray-600 hover:bg-gray-500 text-white px-2 rounded"><X size={16} /></button>
+                        <button onClick={() => { if (!newLecTitle.trim()) return; onAddLecture(subject.id, mod.id, newLecTitle, newLecDuration, null); setNewLecTitle(""); setNewLecDuration(""); setAddLecForm({ moduleId: null, index: null }); }} className="bg-blue-600 hover:bg-blue-500 text-white px-3 rounded text-sm font-bold">Add</button>
+                        <button onClick={() => setAddLecForm({ moduleId: null, index: null })} className="bg-gray-600 hover:bg-gray-500 text-white px-2 rounded"><X size={16} /></button>
                       </div>
                     ) : (
-                      <button onClick={() => setAddingLectureTo(mod.id)} className="text-sm text-gray-500 hover:text-blue-400 flex items-center gap-1 transition-colors pl-8"><Plus size={16} /> Add Topic</button>
+                      <button onClick={() => setAddLecForm({ moduleId: mod.id, index: null })} className="text-sm text-gray-500 hover:text-blue-400 flex items-center gap-1 transition-colors pl-8"><Plus size={16} /> Add Topic</button>
                     )}
                   </div>
                 </div>
@@ -1183,13 +1222,24 @@ function SyllabusDetailView({
 // ============================================================
 // SUB-COMPONENT: SINGLE LECTURE ROW
 // ============================================================
-function LectureRow({ lecture, subjectId, moduleId, onToggleLecture, onToggleTodayGoal, onDeleteLecture, onUpdateLectureDuration }) {
+function LectureRow({ lecture, subjectId, moduleId, onToggleLecture, onToggleTodayGoal, onDeleteLecture, onUpdateLectureDuration, onUpdateLectureLink, onInsertBelow }) {
   const [editingDuration, setEditingDuration] = useState(false);
   const [draftDuration,   setDraftDuration]   = useState(String(lecture.durationMin || ''));
+  const [editingLink,     setEditingLink]     = useState(false);
+  const [draftLink,       setDraftLink]       = useState(lecture.link || '');
 
   const saveDuration = () => {
     onUpdateLectureDuration(subjectId, moduleId, lecture.id, draftDuration);
     setEditingDuration(false);
+  };
+
+  const saveLink = () => {
+    let finalLink = draftLink.trim();
+    if (finalLink && !finalLink.startsWith('http')) {
+      finalLink = 'https://' + finalLink;
+    }
+    onUpdateLectureLink(subjectId, moduleId, lecture.id, finalLink);
+    setEditingLink(false);
   };
 
   return (
@@ -1207,6 +1257,38 @@ function LectureRow({ lecture, subjectId, moduleId, onToggleLecture, onToggleTod
       </label>
 
       <div className="flex items-center gap-2 shrink-0">
+
+        {/* ── Link Edit / View Logic ── */}
+        {editingLink ? (
+          <div className="flex items-center gap-1">
+            <input 
+              type="url" 
+              value={draftLink} 
+              onChange={e => setDraftLink(e.target.value)} 
+              onBlur={saveLink} 
+              onKeyDown={e => { if (e.key === 'Enter') saveLink(); if (e.key === 'Escape') { setDraftLink(lecture.link || ''); setEditingLink(false); } }} 
+              autoFocus 
+              placeholder="Paste URL..." 
+              className="bg-gray-700 border border-blue-500/60 text-blue-300 text-xs rounded px-2 py-1 w-32 outline-none font-mono" 
+            />
+            <button onClick={saveLink} className="text-green-400 hover:text-green-300"><Check size={14} /></button>
+          </div>
+        ) : lecture.link ? (
+          <div className="flex items-center gap-1">
+            <a href={lecture.link} target="_blank" rel="noreferrer" title="Open Link" className="text-blue-400 hover:text-blue-300 p-1 transition-colors">
+              <ExternalLink size={16} />
+            </a>
+            <button onClick={() => setEditingLink(true)} title="Edit Link" className="text-gray-600 hover:text-gray-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <Edit2 size={12} />
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setEditingLink(true)} title="Add URL / Link" className="text-gray-600 hover:text-blue-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <LinkIcon size={16} />
+          </button>
+        )}
+
+        {/* ── Duration ── */}
         {editingDuration ? (
           <div className="flex items-center gap-1">
             <input type="number" value={draftDuration} onChange={e => setDraftDuration(e.target.value)} onBlur={saveDuration} onKeyDown={e => { if (e.key === 'Enter') saveDuration(); if (e.key === 'Escape') { setDraftDuration(String(lecture.durationMin || '')); setEditingDuration(false); } }} autoFocus placeholder="0" className="bg-gray-700 border border-orange-500/60 text-orange-300 text-xs rounded px-2 py-1 w-16 outline-none font-mono text-center" />
@@ -1227,6 +1309,11 @@ function LectureRow({ lecture, subjectId, moduleId, onToggleLecture, onToggleTod
             <Pencil size={10} className="opacity-0 group-hover/dur:opacity-70 transition-opacity ml-0.5" />
           </button>
         )}
+
+        {/* ── Insert Below Control ── */}
+        <button onClick={onInsertBelow} title="Insert new lecture below this one" className="text-gray-600 hover:text-green-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Plus size={16} />
+        </button>
 
         <button onClick={() => onToggleTodayGoal(subjectId, moduleId, lecture.id)} title={lecture.isTodayGoal ? "Remove from today's goal" : "Add to today's goal"}
           className={`p-1 rounded transition-all active:scale-90 ${lecture.isTodayGoal ? 'text-orange-400 bg-orange-500/20 hover:bg-orange-500/30' : 'text-gray-600 hover:text-orange-400 opacity-0 group-hover:opacity-100'}`}>
